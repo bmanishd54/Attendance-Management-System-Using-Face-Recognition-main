@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Access</title>
+</head>
+<body>
+    <div class="row">
+        <div class="col-md-4" style="padding-left: 220px">
+            <button id="start-camera">Start Camera</button>
+            <video id="video" width="640" height="480" autoplay></video>
+            <button id="capture" style="display:none;">Capture & Mark Attendance</button>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const startCameraButton = document.getElementById('start-camera');
+        const captureButton = document.getElementById('capture');
+
+        startCameraButton.addEventListener('click', async function() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                captureButton.style.display = 'inline-block';
+            } catch (err) {
+                console.error('Error accessing the camera: ', err);
+            }
+        });
+
+        captureButton.addEventListener('click', function() {
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            canvas.toBlob(function(blob) {
+                const formData = new FormData();
+                formData.append('frame', blob);
+
+                fetch("{% url 'mark-your-attendance' %}", {
+                    method: 'POST',
+                    body: formData,
+                    headers: {
+                        'X-CSRFToken': '{{ csrf_token }}'
+                    }
+                }).then(response => {
+                    if (response.ok) {
+                        alert('Attendance marked successfully!');
+                    } else {
+                        alert('Failed to mark attendance.');
+                    }
+                }).catch(error => {
+                    console.error('Error:', error);
+                });
+            });
+        });
+    </script>
+</body>
+</html>
