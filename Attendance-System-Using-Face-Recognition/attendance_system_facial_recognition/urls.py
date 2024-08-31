@@ -30,10 +30,12 @@ urlpatterns = [
      path('login/',auth_views.LoginView.as_view(template_name='users/login.html'),name='login'),
     path('logout/',auth_views.LogoutView.as_view(template_name='recognition/home.html'),name='logout'),
      path('register/', users_views.register, name='register'),
-     path('mark_your_attendance', recog_views.mark_your_attendance ,name='mark-your-attendance'),
-      path('mark_your_attendance_out', recog_views.mark_your_attendance_out ,name='mark-your-attendance-out'),
+     path('mark_your_attendance', recog_views.mark_your_attendance ,name='mark_your_attendance'),
+      path('mark_your_attendance_out', recog_views.mark_your_attendance_out ,name='mark_your_attendance_out'),
       path('view_attendance_home', recog_views.view_attendance_home ,name='view-attendance-home'),
-       
+    path('attendance_redirect/', recog_views.attendance_in_redirect, name='attendance_in_redirect'),
+    path('attendance_out_redirect/', recog_views.attendance_out_redirect, name='attendance_out_redirect'),
+      
         path('view_attendance_date', recog_views.view_attendance_date ,name='view-attendance-date'),
         path('view_attendance_employee', recog_views.view_attendance_employee ,name='view-attendance-employee'),
          path('view_my_attendance', recog_views.view_my_attendance_employee_login ,name='view-my-attendance-employee-login'),

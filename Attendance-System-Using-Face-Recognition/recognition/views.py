@@ -23,21 +23,21 @@ from django.contrib.auth.decorators import login_required
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
-import datetime
 from django_pandas.io import read_frame
 from users.models import Present, Time
 import seaborn as sns
 import pandas as pd
 from django.db.models import Count
 #import mpld3
-import matplotlib.pyplot as plt
 from pandas.plotting import register_matplotlib_converters
 from matplotlib import rcParams
 import math
-from django.http import StreamingHttpResponse
-from django.http import StreamingHttpResponse, HttpResponseRedirect
+import datetime
+import numpy as np
+import base64
+from django.http import JsonResponse, StreamingHttpResponse, HttpResponseRedirect
 from django.urls import reverse
-from django.contrib import messages
+
 mpl.use('Agg')
 
 
@@ -199,11 +199,6 @@ def update_attendance_in_db_in(present):
 		if present[person]==True:
 			a=Time(user=user,date=today,time=time, out=False)
 			a.save()
-
-
-			
-		
-
 
 
 
@@ -575,113 +570,157 @@ def add_photos(request):
 			form=usernameForm()
 			return render(request,'recognition/add_photos.html', {'form' : form})
 
+# Utility function to draw prediction and probability on the frame
+def draw_prediction(frame, person_name, probability, x, y, w, h):
+    # Draw the bounding box
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    
+    # Prepare the text to display (name + probability)
+    text = f"{person_name} ({probability:.2f}%)"
+    
+    # Place the text on top of the bounding box
+    cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
 
+# View to mark attendance when checking in
 def mark_your_attendance(request):
-    # Load necessary models and data (same as before)
+    if request.method == 'POST':
+        # Load necessary models and data
+        detector = dlib.get_frontal_face_detector()
+        predictor = dlib.shape_predictor('face_recognition_data/shape_predictor_68_face_landmarks.dat')
+        svc_save_path = "face_recognition_data/svc.sav"
+        
+        with open(svc_save_path, 'rb') as f:
+            svc = pickle.load(f)
+        
+        fa = FaceAligner(predictor, desiredFaceWidth=96)
+        encoder = LabelEncoder()
+        encoder.classes_ = np.load('face_recognition_data/classes.npy')
+        
+        faces_encodings = np.zeros((1, 128))
+        no_of_faces = len(svc.predict_proba(faces_encodings)[0])
+        count = {encoder.inverse_transform([i])[0]: 0 for i in range(no_of_faces)}
+        present = {encoder.inverse_transform([i])[0]: False for i in range(no_of_faces)}
+        log_time = {}
+        start = {}
 
-    def gen_frames():
-        vs = VideoStream(src=0).start()
-        while True:
-            frame = vs.read()
-            frame = imutils.resize(frame, width=800)
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = detector(gray_frame, 0)
+        # Get the frame data from the POST request
+        frame_data = request.POST.get('frame')
+        frame_bytes = np.frombuffer(base64.b64decode(frame_data), dtype=np.uint8)
+        frame = cv2.imdecode(frame_bytes, cv2.IMREAD_COLOR)
 
-            for face in faces:
-                (x, y, w, h) = face_utils.rect_to_bb(face)
-                face_aligned = fa.align(frame, gray_frame, face)
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
-                
-                (pred, prob) = predict(face_aligned, svc)
-                if pred != [-1]:
-                    person_name = encoder.inverse_transform(np.ravel([pred]))[0]
-                    if count[person_name] == 0:
-                        start[person_name] = time.time()
-                        count[person_name] += 1
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = detector(gray_frame, 0)
 
-                    if count[person_name] == 4 and (time.time() - start[person_name]) > 1.2:
-                        count[person_name] = 0
-                    else:
-                        present[person_name] = True
-                        log_time[person_name] = datetime.datetime.now()
-                        count[person_name] += 1
-                    cv2.putText(frame, str(person_name) + str(prob), (x + 6, y + h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        for face in faces:
+            (x, y, w, h) = face_utils.rect_to_bb(face)
+            face_aligned = fa.align(frame, gray_frame, face)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
+
+            (pred, prob) = predict(face_aligned, svc)
+            if pred != [-1]:
+                person_name = encoder.inverse_transform(np.ravel([pred]))[0]
+                if count[person_name] == 0:
+                    start[person_name] = time.time()
+                    count[person_name] += 1
+
+                if count[person_name] == 4 and (time.time() - start[person_name]) > 1.2:
+                    count[person_name] = 0
                 else:
-                    person_name = "unknown"
-                    cv2.putText(frame, str(person_name), (x + 6, y + h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    present[person_name] = True
+                    log_time[person_name] = datetime.datetime.now()
+                    count[person_name] += 1
 
-            _, buffer = cv2.imencode('.jpg', frame)
-            frame = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+                # Extract the first element from prob if it's an array
+                prob_value = prob[0] if isinstance(prob, np.ndarray) else prob
+                cv2.putText(frame, f"{person_name} {prob_value:.2f}", (x + 6, y + h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            else:
+                person_name = "unknown"
+                cv2.putText(frame, str(person_name), (x + 6, y + h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        vs.stop()
-        cv2.destroyAllWindows()
+        # Update attendance in the database
         update_attendance_in_db_in(present)
 
-    # Start streaming the video frames
-    streaming_response = StreamingHttpResponse(gen_frames(), content_type='multipart/x-mixed-replace; boundary=frame')
+        # Return a success response
+        return JsonResponse({"status": "success", "message": "Attendance marked successfully"})
 
-    # Once the stream ends, redirect to the home page with a success message
-    if not any(present.values()):  # If attendance was not marked
-        return HttpResponseRedirect(reverse('home'))
-    else:
-        messages.success(request, 'Attendance marked successfully for check-in.')
-        return HttpResponseRedirect(reverse('home'))
+    return JsonResponse({"status": "error", "message": "Invalid request method"})
+# Home view
+def home(request):
+    return render(request, 'recognition/home.html')
+# View to mark attendance when checking out
 
 def mark_your_attendance_out(request):
-    # Load necessary models and data (same as before)
+    if request.method == 'POST':
+        # Load necessary models and data
+        detector = dlib.get_frontal_face_detector()
+        predictor = dlib.shape_predictor('face_recognition_data/shape_predictor_68_face_landmarks.dat')
+        svc_save_path = "face_recognition_data/svc.sav"
+        
+        with open(svc_save_path, 'rb') as f:
+            svc = pickle.load(f)
+        
+        fa = FaceAligner(predictor, desiredFaceWidth=96)
+        encoder = LabelEncoder()
+        encoder.classes_ = np.load('face_recognition_data/classes.npy')
+        
+        faces_encodings = np.zeros((1, 128))
+        no_of_faces = len(svc.predict_proba(faces_encodings)[0])
+        count = {encoder.inverse_transform([i])[0]: 0 for i in range(no_of_faces)}
+        present = {encoder.inverse_transform([i])[0]: False for i in range(no_of_faces)}
+        log_time = {}
+        start = {}
 
-    def gen_frames():
-        vs = VideoStream(src=0).start()
-        while True:
-            frame = vs.read()
-            frame = imutils.resize(frame, width=800)
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = detector(gray_frame, 0)
+        # Get the frame data from the POST request
+        frame_data = request.POST.get('frame')
+        frame_bytes = np.frombuffer(base64.b64decode(frame_data), dtype=np.uint8)
+        frame = cv2.imdecode(frame_bytes, cv2.IMREAD_COLOR)
 
-            for face in faces:
-                (x, y, w, h) = face_utils.rect_to_bb(face)
-                face_aligned = fa.align(frame, gray_frame, face)
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
-                
-                (pred, prob) = predict(face_aligned, svc)
-                if pred != [-1]:
-                    person_name = encoder.inverse_transform(np.ravel([pred]))[0]
-                    if count[person_name] == 0:
-                        start[person_name] = time.time()
-                        count[person_name] += 1
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = detector(gray_frame, 0)
 
-                    if count[person_name] == 4 and (time.time() - start[person_name]) > 1.2:
-                        count[person_name] = 0
-                    else:
-                        present[person_name] = True
-                        log_time[person_name] = datetime.datetime.now()
-                        count[person_name] += 1
-                    cv2.putText(frame, str(person_name) + str(prob), (x + 6, y + h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        for face in faces:
+            (x, y, w, h) = face_utils.rect_to_bb(face)
+            face_aligned = fa.align(frame, gray_frame, face)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
+
+            (pred, prob) = predict(face_aligned, svc)
+            if pred != [-1]:
+                person_name = encoder.inverse_transform(np.ravel([pred]))[0]
+                if count[person_name] == 0:
+                    start[person_name] = time.time()
+                    count[person_name] += 1
+
+                if count[person_name] == 4 and (time.time() - start[person_name]) > 1.2:
+                    count[person_name] = 0
                 else:
-                    person_name = "unknown"
-                    cv2.putText(frame, str(person_name), (x + 6, y + h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    present[person_name] = True
+                    log_time[person_name] = datetime.datetime.now()
+                    count[person_name] += 1
 
-            _, buffer = cv2.imencode('.jpg', frame)
-            frame = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+                # Extract the first element from prob if it's an array
+                prob_value = prob[0] if isinstance(prob, np.ndarray) else prob
+                cv2.putText(frame, f"{person_name} {prob_value:.2f}", (x + 6, y + h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            else:
+                person_name = "unknown"
+                cv2.putText(frame, str(person_name), (x + 6, y + h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        vs.stop()
-        cv2.destroyAllWindows()
+        # Update attendance in the database
         update_attendance_in_db_out(present)
 
-    # Start streaming the video frames
-    streaming_response = StreamingHttpResponse(gen_frames(), content_type='multipart/x-mixed-replace; boundary=frame')
+        # Return a success response
+        return JsonResponse({"status": "success", "message": "Attendance marked successfully"})
 
-    # Once the stream ends, redirect to the home page with a success message
-    if not any(present.values()):  # If attendance was not marked
-        return HttpResponseRedirect(reverse('home'))
-    else:
-        messages.success(request, 'Attendance marked successfully for check-out.')
-        return HttpResponseRedirect(reverse('home'))
+    return JsonResponse({"status": "error", "message": "Invalid request method"})
+
+# Views to handle redirects after attendance is marked
+def attendance_in_redirect(request):
+    messages.success(request, 'Attendance marked successfully for check-in.')
+    return HttpResponseRedirect(reverse('home'))
+
+def attendance_out_redirect(request):
+    messages.success(request, 'Attendance marked successfully for check-out.')
+    return HttpResponseRedirect(reverse('home'))
 
 @login_required
 def train(request):
